@@ -1,0 +1,197 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+# Configure the AWS Provider
+provider "aws" {
+  region = "ap-south-1"
+  access_key = "access_key"
+  secret_key = "secret_key"
+}
+
+# Create a VPC
+resource "aws_vpc" "class7a-vpc" {
+  cidr_block       = "10.0.0.0/16"
+  instance_tenancy = "default"
+
+  tags = {
+    Name = "class7a-vpc"
+  }
+}
+
+# Add Public and Private Subnet
+resource "aws_subnet" "public-subnet" {
+  vpc_id     = aws_vpc.class7a-vpc.id
+  cidr_block = "10.0.1.0/24"
+
+  tags = {
+    Name = "public-subnet"
+  }
+}
+resource "aws_subnet" "private-subnet" {
+  vpc_id     = aws_vpc.class7a-vpc.id
+  cidr_block = "10.0.2.0/24"
+
+  tags = {
+    Name = "private-subnet"
+  }
+}
+
+#Create SG
+resource "aws_security_group" "class7a-sg" {
+  name        = "allow_SSH&HTTPS"
+  description = "Allow TLS inbound traffic and all outbound traffic"
+  vpc_id      = aws_vpc.class7a-vpc.id
+
+  tags = {
+    Name = "class7a-sg"
+  }
+
+  ingress {
+    from_port        = 22
+    to_port          = 22
+    protocol         = "TCP"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+
+  ingress {
+    from_port        = 443
+    to_port          = 443
+    protocol         = "TCP"
+    cidr_blocks      = ["0.0.0.0/0"]
+  }
+
+
+    egress {
+    from_port        = 0
+    to_port          = 0
+    protocol         = "-1"
+    cidr_blocks      = ["0.0.0.0/0"]
+    ipv6_cidr_blocks = ["::/0"]
+  }
+
+
+}
+
+#Create IGW
+resource "aws_internet_gateway" "class7a-gw" {
+  vpc_id = aws_vpc.class7a-vpc.id
+
+  tags = {
+    Name = "class7a-gw"
+  }
+}
+
+#Add route table
+resource "aws_route_table" "public-rt" {
+  vpc_id = aws_vpc.class7a-vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.class7a-gw.id
+  }
+
+  tags = {
+    Name = "public-rt"
+  }
+}
+
+resource "aws_route_table" "private-rt" {
+  vpc_id = aws_vpc.class7a-vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.class7a-gw.id
+  }
+
+  tags = {
+    Name = "private-rt"
+  }
+}
+
+#define route association
+resource "aws_route_table_association" "public-rt-assoc" {
+  subnet_id = aws_subnet.public-subnet.id
+  route_table_id = aws_route_table.public-rt.id
+}
+resource "aws_route_table_association" "private-rt-assoc" {
+  subnet_id = aws_subnet.private-subnet.id
+  route_table_id = aws_route_table.private-rt.id
+}
+
+#EIP for NAT-Gateway
+resource "aws_eip" "class7a-nat-gw-eip" {
+  domain   = "vpc"
+}
+
+#Create NAT-Gateway
+resource "aws_nat_gateway" "class7a-nat-gw" {
+  allocation_id = aws_eip.class7a-nat-gw-eip.id
+  subnet_id     = aws_subnet.public-subnet.id
+
+  tags = {
+    Name = "NAT-GW for DB"
+  }
+}
+ 
+
+#NAT GW Route table and Route association
+resource "aws_route_table" "private-rt-nat-gw" {
+  vpc_id = aws_vpc.class7a-vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_nat_gateway.class7a-nat-gw.id
+  }
+
+
+  tags = {
+    Name = "private-rt-nat-gw"
+  }
+}
+resource "aws_route_table_association" "nat-gw-private-rt-assoc" {
+  subnet_id     = aws_subnet.private-subnet.id
+  route_table_id = aws_route_table.private-rt-nat-gw.id
+}
+
+
+#EIP for EC2 Instance
+resource "aws_eip" "web-eip" {
+  instance = aws_instance.web.id
+  domain   = "vpc"
+}
+
+#Create instance add all imp parameters
+resource "aws_instance" "web" {
+  ami           = "ami-0a4408457f9a03be3"
+  instance_type = "t2.micro"
+  subnet_id = aws_subnet.public-subnet.id
+  vpc_security_group_ids = [aws_security_group.class7a-sg.id]
+  key_name = "terraform-test"
+
+  tags = {
+    Name = "web"
+  }
+}
+resource "aws_key_pair" "terraform-test" {
+  key_name = "terraform-test"
+  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDWDPvmuMyPaN0H38v1eBfsvWjveg9y9CjrX8gjzQ+j1t37uYaNgGGkUhpiw5m7en8jXjknBZ7zrO6sWBj05d8UjFdckEn9epcypopIqfdazqnPQvZf0oHPZ0mqdlBviYtPliwkUKIM4E1czh8tYTI7VxoanaSILP6J7zwMbHTKD8CecAA6qUdsfAUreQJabTxc5OmWS+xGo09FuWGdwyM+XkxJtwPwXL9X44tTGPeAMLchOpNnFoAMHYH3+APOFXZHHCFtTXc+TvTnOUTpg5xovTZJTKVHZcWVH83pASHPmGTdQmHini7Eth6XCdi75Vp6TbiOpW4KC6BJn3QzNPOulDxBFei13ncAYXw4FnFZ0/8TGNY+O+nQZoPjzZckGciZbCUDkT+Hgo8HviBwRAT7qLpvDcsQTNLnoOKos+O6J39RYSKQoljapm5bI7iZNb8e2MTznmHG1zIZWdMkpcoVBYcLLPrfNKeRXXNdAVLlB7xBxW3fYtieZMURzZtTAfc= akshaay siingh@RadhavallabhJi"
+}
+
+resource "aws_instance" "db" {
+  ami           = "ami-0a4408457f9a03be3"
+  instance_type = "t3.micro"
+  subnet_id = aws_subnet.private-subnet.id
+  vpc_security_group_ids = [aws_security_group.class7a-sg.id]
+  key_name = "terraform-test"
+
+  tags = {
+    Name = "db"
+  }
+}
